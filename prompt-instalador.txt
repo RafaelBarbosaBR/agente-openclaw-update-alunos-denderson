@@ -1,0 +1,10 @@
+Quero ATUALIZAR meu agente OpenClaw que ja roda na minha VPS pra a versao mais recente da Naia/Avalanche (com as 4 skills novas: propostas comerciais, landing pages, analise BMAD Instagram, criacao de subagentes).
+
+Acessa o repositorio publico https://github.com/denderson2013-bot/agente-openclaw-update-alunos-denderson e segue o passo a passo de UPGRADE-AGENTE.md.
+
+Vou te dar conforme voce pedir:
+- IP, usuario e senha da minha VPS atual
+- Versao atual do OpenClaw (se eu souber, ou voce detecta)
+- Confirmacao de backup antes de aplicar
+
+Faz SSH na minha VPS, detecta versao, faz backup, aplica o upgrade idempotente, restart, e me confirma que esta tudo no ar com as 4 skills novas.
