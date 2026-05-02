@@ -9,7 +9,8 @@ Uso:
   python3 analyze.py @username --no-deploy
 
 Variaveis de ambiente esperadas (lidas de /opt/naia-agent/.env automaticamente):
-  HIKERAPI_KEY         - chave da HikerAPI
+  INSTAGRAM_API_KEY    - chave do provedor de dados publicos do Instagram
+  INSTAGRAM_API_BASE   - URL base do provedor (default: ver provedor escolhido)
   GEMINI_API_KEY       - chave Google Gemini
   DOMINIO_BASE         - dominio raiz do ALUNO (ex: meunegocio.com.br)
   CLOUDFLARE_DNS_TOKEN - token Cloudflare DNS Edit do aluno
@@ -77,7 +78,7 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 PROMPTS_DIR = SKILL_DIR / "prompts"
 TEMPLATE_PATH = SKILL_DIR / "template-dossie.html"
 
-HIKERAPI_BASE = "https://hikerapi.com/v2"
+INSTAGRAM_API_BASE = os.getenv("INSTAGRAM_API_BASE", "")
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
 
 OUTPUT_BASE = Path("/tmp")
@@ -133,12 +134,12 @@ def retry(func, *args, **kwargs):
 
 
 # ----------------------------------------------------------------------------
-# HIKERAPI
+# INSTAGRAM DATA PROVIDER
 # ----------------------------------------------------------------------------
 
-def hikerapi_user_by_username(username, key):
+def ig_user_by_username(username, key):
     """Busca dados base do perfil."""
-    url = f"{HIKERAPI_BASE}/user/by/username"
+    url = f"{INSTAGRAM_API_BASE}/user/by/username"
     headers = {"x-access-key": key, "accept": "application/json"}
     params = {"username": username}
     r = httpx.get(url, headers=headers, params=params, timeout=30)
@@ -146,9 +147,9 @@ def hikerapi_user_by_username(username, key):
     return r.json()
 
 
-def hikerapi_user_medias(user_id, key, count=12):
+def ig_user_medias(user_id, key, count=12):
     """Busca os 12 ultimos posts."""
-    url = f"{HIKERAPI_BASE}/user/medias/chunk"
+    url = f"{INSTAGRAM_API_BASE}/user/medias/chunk"
     headers = {"x-access-key": key, "accept": "application/json"}
     params = {"user_id": user_id, "end_cursor": ""}
     r = httpx.get(url, headers=headers, params=params, timeout=30)
@@ -159,10 +160,10 @@ def hikerapi_user_medias(user_id, key, count=12):
     return []
 
 
-def hikerapi_user_clips(user_id, key, count=3):
+def ig_user_clips(user_id, key, count=3):
     """Busca os 3 ultimos reels (opcional)."""
     try:
-        url = f"{HIKERAPI_BASE}/user/clips/chunk"
+        url = f"{INSTAGRAM_API_BASE}/user/clips/chunk"
         headers = {"x-access-key": key, "accept": "application/json"}
         params = {"user_id": user_id, "end_cursor": ""}
         r = httpx.get(url, headers=headers, params=params, timeout=30)
@@ -177,15 +178,15 @@ def hikerapi_user_clips(user_id, key, count=3):
 
 
 # ----------------------------------------------------------------------------
-# TANDEM (FALLBACK)
+# FALLBACK (browser headless)
 # ----------------------------------------------------------------------------
 
-def tandem_fallback(username):
-    """Fallback minimo quando HikerAPI esta down ou bloqueada.
+def browser_fallback(username):
+    """Fallback minimo quando a API principal esta down ou bloqueada.
     Retorna estrutura compativel com dados mockados, marcando is_fallback=True.
-    Em producao real, integraria com PinchTab Browser.
+    Em producao real, integraria com um browser headless (Playwright/Puppeteer).
     """
-    log("Usando fallback Tandem (dados limitados)", "warn")
+    log("Usando fallback browser headless (dados limitados)", "warn")
     return {
         "user": {
             "username": username,
@@ -522,7 +523,7 @@ def render_dados_brutos(posts):
     ])
 
     return f"""
-    <p class='text-sm text-gray-400 mb-6'>Dados coletados via HikerAPI. {len(posts)} posts analisados.</p>
+    <p class='text-sm text-gray-400 mb-6'>Dados coletados do perfil publico. {len(posts)} posts analisados.</p>
     <div class='grid md:grid-cols-2 gap-4'>{cards}</div>
     """
 
@@ -541,24 +542,28 @@ def render_html(template_html, ctx):
 def run_pipeline(username, modo="crescimento", do_deploy=True):
     log(f"Iniciando pipeline BMAD para @{username} (modo={modo})")
 
-    hikerapi_key = os.getenv("HIKERAPI_KEY", "{{HIKERAPI_KEY}}")
+    ig_key = os.getenv("INSTAGRAM_API_KEY", "{{INSTAGRAM_API_KEY}}")
     gemini_key = os.getenv("GEMINI_API_KEY", "{{GEMINI_API_KEY}}")
 
-    if hikerapi_key.startswith("{{") or gemini_key.startswith("{{"):
-        log("HIKERAPI_KEY ou GEMINI_API_KEY nao configuradas. Use env vars.", "err")
+    if ig_key.startswith("{{") or gemini_key.startswith("{{"):
+        log("INSTAGRAM_API_KEY ou GEMINI_API_KEY nao configuradas. Use env vars.", "err")
+        sys.exit(1)
+
+    if not INSTAGRAM_API_BASE:
+        log("INSTAGRAM_API_BASE nao configurado. Defina a URL base do provedor de dados publicos do Instagram.", "err")
         sys.exit(1)
 
     # 1. CRAWL
-    log("Etapa 1: Coletando dados via HikerAPI")
+    log("Etapa 1: Coletando dados via provedor publico do Instagram")
     try:
-        user = retry(hikerapi_user_by_username, username, hikerapi_key)
+        user = retry(ig_user_by_username, username, ig_key)
         if isinstance(user, dict) and "user" in user:
             user_obj = user.get("user", user)
         else:
             user_obj = user
     except Exception as e:
-        log(f"HikerAPI falhou, ativando fallback: {e}", "warn")
-        fb = tandem_fallback(username)
+        log(f"API principal falhou, ativando fallback: {e}", "warn")
+        fb = browser_fallback(username)
         user_obj = fb["user"]
 
     if user_obj.get("is_private"):
@@ -570,7 +575,7 @@ def run_pipeline(username, modo="crescimento", do_deploy=True):
     if user_id:
         try:
             log("Etapa 2: Coletando 12 ultimos posts")
-            posts = retry(hikerapi_user_medias, user_id, hikerapi_key, 12)
+            posts = retry(ig_user_medias, user_id, ig_key, 12)
         except Exception as e:
             log(f"Erro ao coletar posts: {e}", "warn")
 
