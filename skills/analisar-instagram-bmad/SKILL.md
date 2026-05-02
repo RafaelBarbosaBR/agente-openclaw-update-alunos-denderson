@@ -30,34 +30,31 @@ Sempre que o usuario pedir qualquer coisa relacionada a entender, analisar, audi
 - "quero entender o perfil @username"
 - "raio-x do instagram do @username"
 
-## Fluxo de execucao (10 etapas)
+## Fluxo de execucao (8 etapas)
 
 ### Etapa 1: Receber input
 Extrair @username da mensagem do usuario. Limpar @ e espacos. Validar formato.
 
-### Etapa 2: Crawl HikerAPI (3 chamadas)
-Coletar dados base do perfil:
-- `user_by_username_v2`: bio, follower_count, full_name, is_verified, external_url, category, public_email
-- `user_medias_chunk_v1`: 12 posts mais recentes com captions, likes, comments, taken_at
-- `user_clips`: 3 reels mais recentes (opcional)
+### Etapa 2: Coletar dados publicos do perfil
+Coletar dados publicos visiveis do perfil (bio, contagens, ultimos posts visiveis). A skill aceita os dados via:
+- Input manual do aluno (cola bio, contagem de seguidores, captions dos ultimos posts)
+- Print/screenshot do perfil que o agente le com Gemini multimodal
+- Browser publico (PinchTab/headless) navegando ate o perfil publico
 
-### Etapa 3: Crawl Tandem (fallback)
-Se HikerAPI falhar (rate limit / bloqueio), acionar fallback Tandem Browser via PinchTab. Capturar dados visiveis (bio, seguidores, ultimos posts).
-
-### Etapa 4: Analise Gemini (3 chamadas em sequencia)
+### Etapa 3: Analise Gemini (3 chamadas em sequencia)
 1. Visao Macro: nicho, ICP, posicionamento, top 3 forcas, top 3 fraquezas
 2. Conteudo: pilares, formato dominante, frequencia, padroes virais, gaps
 3. Estrategia 30 dias: plano dia a dia, metas, oportunidades nao exploradas
 
 Prompts completos em `prompts/01-visao-macro.md`, `prompts/02-conteudo.md`, `prompts/03-estrategia-30-dias.md`.
 
-### Etapa 5: Montar dossie HTML
+### Etapa 4: Montar dossie HTML
 Usar `template-dossie.html` e substituir placeholders:
 - `{{USERNAME}}`, `{{AVATAR_URL}}`, `{{BIO}}`, `{{FOLLOWERS}}`, `{{FULL_NAME}}`, `{{VERIFIED}}`
 - `{{ANALISE_VISAO_GERAL}}`, `{{ANALISE_CONTEUDO}}`, `{{PLANO_30_DIAS}}`, `{{POSTS_DATA}}`
 - `{{GERADO_EM}}` (timestamp BRT)
 
-### Etapa 6: Deploy
+### Etapa 5: Deploy
 Rodar `scripts/deploy-dossie.sh USERNAME` que faz:
 1. Le `DOMINIO_BASE` do .env do agente (`/opt/naia-agent/.env` ou env exportada). Se nao existir, aborta e instrui o aluno: "Falta configurar DOMINIO_BASE no /opt/naia-agent/.env. Te explico como." e mostra o passo a passo.
 2. Define `FQDN="${USERNAME_INSTAGRAM}.${DOMINIO_BASE}"` (ex: `joaodasilva.meunegocio.com.br`).
@@ -67,18 +64,19 @@ Rodar `scripts/deploy-dossie.sh USERNAME` que faz:
 6. `vercel domains add $FQDN <project>` no escopo do aluno
 7. Cria registro DNS A no Cloudflare zone do aluno (`$CLOUDFLARE_ZONE_ID` do .env) apontando pra 76.76.21.21 (proxy OFF), usando token `$CLOUDFLARE_DNS_TOKEN` do aluno.
 
-### Etapa 7: Entregar URL
+### Etapa 6: Entregar URL
 Retornar `https://$FQDN` ao usuario (ex: `https://joaodasilva.meunegocio.com.br`), com resumo executivo de 5 bullets.
 
-### Etapa 8: Meta de seguidores
+### Etapa 7: Meta de seguidores
 Por padrao, plano de 30 dias mira em `+10%` no follower_count atual.
 Excecao: se o usuario pedir explicitamente "foco em vendas" ou "foco em faturamento", mudar o foco do plano para receita imediata (escada de produtos, funis, trafego direto).
 
-### Etapa 9: Tom do dossie
+### Etapa 8: Tom do dossie
 Educativo + estrategico + acionavel. Nunca academico. Nunca generico. Sempre com numeros, datas e CTAs concretos.
 
-### Etapa 10: Custo e precificacao
-- Custo de producao: ~US$0,025 por dossie (3 chamadas HikerAPI a US$0,001 + Gemini ~US$0,02)
+## Custo e precificacao
+
+- Custo de producao: ~US$0,02 por dossie (apenas chamadas Gemini)
 - Pricing pro cliente: R$ 497 (perfis ate 50k seguidores), R$ 997 (50k a 500k), R$ 2.000 (500k+)
 - Margem operacional: > 99%
 
@@ -100,8 +98,7 @@ Output:
 O aluno cadastra no `/opt/naia-agent/.env` do agente dele (NAO no codigo da skill). A skill apenas le essas variaveis em runtime:
 
 ```
-# Crawl + IA
-HIKERAPI_KEY=...
+# IA
 GEMINI_API_KEY=...
 
 # Deploy (dominio do ALUNO, nao do Denderson)
@@ -138,10 +135,10 @@ analisar-instagram-bmad/
 
 ## Regras importantes
 
-1. Nunca invente dados. Se HikerAPI nao retornar campo X, deixar `null` no HTML.
+1. Nunca invente dados. Se algum campo nao for visivel publicamente, deixar `null` no HTML.
 2. Sempre confirmar @username antes de gastar API. Se ambiguo, perguntar.
 3. Se perfil for privado, avisar e parar. Nao tentar engenharia social.
 4. Plano de 30 dias sempre tem meta numerica realista (+10% padrao).
 5. Tom de voz: portugues brasileiro, fluido, sem travessoes, sem linguagem robotica.
 6. Apos deploy, sempre entregar a URL final (`https://USERNAME.DOMINIO_BASE`) com 5 insights principais resumidos.
-7. Custo de cada dossie e baixo (~US$0,025), mas evite rodar 2x pro mesmo perfil sem necessidade.
+7. Custo de cada dossie e baixo (~US$0,02), mas evite rodar 2x pro mesmo perfil sem necessidade.

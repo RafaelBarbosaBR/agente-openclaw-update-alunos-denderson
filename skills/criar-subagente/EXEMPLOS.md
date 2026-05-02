@@ -13,7 +13,7 @@
 ```markdown
 ---
 name: sdr-estetica
-description: SDR especialista em estetica feminina premium. Qualifica leads de clinicas, harmonizacao, depilacao, tratamentos. Acionar quando: "lead de estetica chegou", "qualifica essa clinica", "agenda call com a esteticista", "prospecta clinica de estetica".
+description: SDR especialista em estetica feminina premium. Qualifica leads de clinicas, harmonizacao, depilacao, tratamentos. Acionar quando: "lead de estetica chegou", "qualifica essa clinica", "agenda call com a esteticista", "novo contato de clinica de estetica".
 tools: [Read, Write, WebFetch]
 model: sonnet
 ---
