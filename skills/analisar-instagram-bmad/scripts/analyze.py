@@ -7,10 +7,9 @@ Uso:
   python3 analyze.py username
   python3 analyze.py @username --modo vendas
   python3 analyze.py @username --no-deploy
+  python3 analyze.py @username --input dados.json   # le dados do perfil ja coletados
 
 Variaveis de ambiente esperadas (lidas de /opt/naia-agent/.env automaticamente):
-  INSTAGRAM_API_KEY    - chave do provedor de dados publicos do Instagram
-  INSTAGRAM_API_BASE   - URL base do provedor (default: ver provedor escolhido)
   GEMINI_API_KEY       - chave Google Gemini
   DOMINIO_BASE         - dominio raiz do ALUNO (ex: meunegocio.com.br)
   CLOUDFLARE_DNS_TOKEN - token Cloudflare DNS Edit do aluno
@@ -19,6 +18,12 @@ Variaveis de ambiente esperadas (lidas de /opt/naia-agent/.env automaticamente):
   VERCEL_SCOPE         - scope/team Vercel do aluno
   GH_TOKEN             - PAT GitHub do aluno
   GH_OWNER             - user/org GitHub do aluno
+
+Coleta de dados:
+  Por padrao, a skill espera que voce passe os dados do perfil em um JSON
+  via flag --input. Esse JSON pode ser montado lendo a pagina publica do
+  perfil (com Gemini multimodal lendo print do perfil, ou agente lendo a
+  pagina HTML publica). Veja "Etapa 2" no SKILL.md.
 
 Saida:
   /tmp/dossie-USERNAME/index.html
@@ -41,12 +46,6 @@ try:
 except ImportError:
     subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "httpx"])
     import httpx
-
-try:
-    import requests
-except ImportError:
-    subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "requests"])
-    import requests
 
 
 def load_env_file(path):
@@ -78,7 +77,6 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 PROMPTS_DIR = SKILL_DIR / "prompts"
 TEMPLATE_PATH = SKILL_DIR / "template-dossie.html"
 
-INSTAGRAM_API_BASE = os.getenv("INSTAGRAM_API_BASE", "")
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
 
 OUTPUT_BASE = Path("/tmp")
@@ -134,59 +132,11 @@ def retry(func, *args, **kwargs):
 
 
 # ----------------------------------------------------------------------------
-# INSTAGRAM DATA PROVIDER
+# COLETA DE DADOS DO PERFIL (input manual ou JSON pre-coletado)
 # ----------------------------------------------------------------------------
 
-def ig_user_by_username(username, key):
-    """Busca dados base do perfil."""
-    url = f"{INSTAGRAM_API_BASE}/user/by/username"
-    headers = {"x-access-key": key, "accept": "application/json"}
-    params = {"username": username}
-    r = httpx.get(url, headers=headers, params=params, timeout=30)
-    r.raise_for_status()
-    return r.json()
-
-
-def ig_user_medias(user_id, key, count=12):
-    """Busca os 12 ultimos posts."""
-    url = f"{INSTAGRAM_API_BASE}/user/medias/chunk"
-    headers = {"x-access-key": key, "accept": "application/json"}
-    params = {"user_id": user_id, "end_cursor": ""}
-    r = httpx.get(url, headers=headers, params=params, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    if isinstance(data, list) and len(data) > 0:
-        return data[0][:count] if isinstance(data[0], list) else data[:count]
-    return []
-
-
-def ig_user_clips(user_id, key, count=3):
-    """Busca os 3 ultimos reels (opcional)."""
-    try:
-        url = f"{INSTAGRAM_API_BASE}/user/clips/chunk"
-        headers = {"x-access-key": key, "accept": "application/json"}
-        params = {"user_id": user_id, "end_cursor": ""}
-        r = httpx.get(url, headers=headers, params=params, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        if isinstance(data, list) and len(data) > 0:
-            return data[0][:count] if isinstance(data[0], list) else data[:count]
-        return []
-    except Exception as e:
-        log(f"Reels nao coletados (opcional): {e}", "warn")
-        return []
-
-
-# ----------------------------------------------------------------------------
-# FALLBACK (browser headless)
-# ----------------------------------------------------------------------------
-
-def browser_fallback(username):
-    """Fallback minimo quando a API principal esta down ou bloqueada.
-    Retorna estrutura compativel com dados mockados, marcando is_fallback=True.
-    Em producao real, integraria com um browser headless (Playwright/Puppeteer).
-    """
-    log("Usando fallback browser headless (dados limitados)", "warn")
+def empty_profile(username):
+    """Estrutura minima de perfil quando nao ha dados pre-coletados."""
     return {
         "user": {
             "username": username,
@@ -204,9 +154,34 @@ def browser_fallback(username):
             "profile_pic_url": "",
             "pk": ""
         },
-        "posts": [],
-        "is_fallback": True
+        "posts": []
     }
+
+
+def load_input_json(input_path, username):
+    """Carrega dados pre-coletados de um JSON local.
+
+    Estrutura esperada:
+      {
+        "user": { ...campos do perfil... },
+        "posts": [ ...lista de posts publicos... ]
+      }
+    """
+    p = Path(input_path)
+    if not p.exists():
+        log(f"Arquivo de input nao existe: {input_path}", "warn")
+        return empty_profile(username)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if "user" not in data:
+            log("JSON de input nao tem chave 'user'. Usando estrutura vazia.", "warn")
+            return empty_profile(username)
+        if "posts" not in data:
+            data["posts"] = []
+        return data
+    except Exception as e:
+        log(f"Falha ao ler input JSON: {e}", "warn")
+        return empty_profile(username)
 
 
 # ----------------------------------------------------------------------------
@@ -523,7 +498,7 @@ def render_dados_brutos(posts):
     ])
 
     return f"""
-    <p class='text-sm text-gray-400 mb-6'>Dados coletados do perfil publico. {len(posts)} posts analisados.</p>
+    <p class='text-sm text-gray-400 mb-6'>Dados publicos coletados. {len(posts)} posts analisados.</p>
     <div class='grid md:grid-cols-2 gap-4'>{cards}</div>
     """
 
@@ -539,45 +514,30 @@ def render_html(template_html, ctx):
 # PIPELINE
 # ----------------------------------------------------------------------------
 
-def run_pipeline(username, modo="crescimento", do_deploy=True):
+def run_pipeline(username, modo="crescimento", do_deploy=True, input_path=None):
     log(f"Iniciando pipeline BMAD para @{username} (modo={modo})")
 
-    ig_key = os.getenv("INSTAGRAM_API_KEY", "{{INSTAGRAM_API_KEY}}")
     gemini_key = os.getenv("GEMINI_API_KEY", "{{GEMINI_API_KEY}}")
 
-    if ig_key.startswith("{{") or gemini_key.startswith("{{"):
-        log("INSTAGRAM_API_KEY ou GEMINI_API_KEY nao configuradas. Use env vars.", "err")
+    if gemini_key.startswith("{{"):
+        log("GEMINI_API_KEY nao configurada. Use env vars.", "err")
         sys.exit(1)
 
-    if not INSTAGRAM_API_BASE:
-        log("INSTAGRAM_API_BASE nao configurado. Defina a URL base do provedor de dados publicos do Instagram.", "err")
-        sys.exit(1)
+    # 1. CARREGAR DADOS DO PERFIL
+    log("Etapa 1: Carregando dados do perfil")
+    if input_path:
+        log(f"Lendo dados de {input_path}")
+        loaded = load_input_json(input_path, username)
+    else:
+        log("Sem JSON de input. Usando estrutura vazia (preencha manualmente apos analise visual).", "warn")
+        loaded = empty_profile(username)
 
-    # 1. CRAWL
-    log("Etapa 1: Coletando dados via provedor publico do Instagram")
-    try:
-        user = retry(ig_user_by_username, username, ig_key)
-        if isinstance(user, dict) and "user" in user:
-            user_obj = user.get("user", user)
-        else:
-            user_obj = user
-    except Exception as e:
-        log(f"API principal falhou, ativando fallback: {e}", "warn")
-        fb = browser_fallback(username)
-        user_obj = fb["user"]
+    user_obj = loaded.get("user", {})
+    posts = loaded.get("posts", []) or []
 
     if user_obj.get("is_private"):
         log("Perfil privado. Abortando.", "err")
         sys.exit(2)
-
-    user_id = user_obj.get("pk") or user_obj.get("id")
-    posts = []
-    if user_id:
-        try:
-            log("Etapa 2: Coletando 12 ultimos posts")
-            posts = retry(ig_user_medias, user_id, ig_key, 12)
-        except Exception as e:
-            log(f"Erro ao coletar posts: {e}", "warn")
 
     follower_count = user_obj.get("follower_count", 0)
 
@@ -592,7 +552,7 @@ def run_pipeline(username, modo="crescimento", do_deploy=True):
     avg_engagement = round(sum(p.get("engagement_rate", 0) for p in posts) / max(len(posts), 1), 2)
 
     # 2. GEMINI 1: VISAO MACRO
-    log("Etapa 3: Analise Gemini - Visao Macro (BMAD)")
+    log("Etapa 2: Analise Gemini - Visao Macro (BMAD)")
     perfil_data = {
         "username": user_obj.get("username", username),
         "full_name": user_obj.get("full_name", ""),
@@ -618,7 +578,7 @@ def run_pipeline(username, modo="crescimento", do_deploy=True):
         macro = {}
 
     # 3. GEMINI 2: CONTEUDO
-    log("Etapa 4: Analise Gemini - Conteudo")
+    log("Etapa 3: Analise Gemini - Conteudo")
     prompt2_tmpl = load_prompt("02-conteudo.md")
     prompt2 = render_prompt(prompt2_tmpl, POSTS_JSON=posts, FOLLOWER_COUNT=str(follower_count))
     try:
@@ -628,7 +588,7 @@ def run_pipeline(username, modo="crescimento", do_deploy=True):
         conteudo = {}
 
     # 4. GEMINI 3: ESTRATEGIA 30 DIAS
-    log("Etapa 5: Analise Gemini - Estrategia 30 Dias")
+    log("Etapa 4: Analise Gemini - Estrategia 30 Dias")
     prompt3_tmpl = load_prompt("03-estrategia-30-dias.md")
     prompt3 = render_prompt(prompt3_tmpl,
                             PERFIL_JSON=perfil_data,
@@ -643,7 +603,7 @@ def run_pipeline(username, modo="crescimento", do_deploy=True):
         plano = {}
 
     # 5. RENDER HTML
-    log("Etapa 6: Renderizando HTML")
+    log("Etapa 5: Renderizando HTML")
     template_html = TEMPLATE_PATH.read_text(encoding="utf-8")
 
     verified_badge = '<span class="text-blue-400 text-2xl" title="Verificado">checkmark</span>' if user_obj.get("is_verified") else ""
@@ -697,7 +657,7 @@ def run_pipeline(username, modo="crescimento", do_deploy=True):
             log("Ver passo a passo em PLAYBOOK-BMAD.md secao 'Como o aluno configura o dominio dele'", "warn")
             log("HTML local segue disponivel: " + str(out_file), "warn")
         else:
-            log("Etapa 7: Deploy via deploy-dossie.sh")
+            log("Etapa 6: Deploy via deploy-dossie.sh")
             deploy_script = SKILL_DIR / "scripts" / "deploy-dossie.sh"
             if deploy_script.exists():
                 try:
@@ -736,6 +696,7 @@ def main():
     parser.add_argument("username", help="@username (com ou sem @)")
     parser.add_argument("--modo", choices=["crescimento", "vendas"], default="crescimento")
     parser.add_argument("--no-deploy", action="store_true", help="So gera HTML, nao faz deploy")
+    parser.add_argument("--input", default=None, help="Caminho de um JSON com dados do perfil (user + posts)")
     args = parser.parse_args()
 
     username = clean_username(args.username)
@@ -743,7 +704,7 @@ def main():
         log(f"Username invalido: {username}", "err")
         sys.exit(1)
 
-    res = run_pipeline(username, modo=args.modo, do_deploy=not args.no_deploy)
+    res = run_pipeline(username, modo=args.modo, do_deploy=not args.no_deploy, input_path=args.input)
     print(json.dumps({"url": res["url"], "html_path": res["html_path"]}, ensure_ascii=False))
 
 
